@@ -1,6 +1,8 @@
 #define ADC_8BIT
 #define USE_SINUS
 
+//#define USE_SH1106
+
 #include <string.h>
 #include <ch32v00x.h>
 #ifdef USE_SPL
@@ -12,13 +14,17 @@
 #endif
 #include "utils.h"
 #include "twi.h"
+#ifdef USE_SH1106
+#include "sh1106.h"
+#else
 #include "ssd1306.h"
+#endif
 #include "encoder.h"
 
 #define ARRAY_SIZE(a)   (sizeof(a) / sizeof(a[0]))
 
 #define CHART_HEIGHT    55
-#define CHART_TOP       (OLED_HEIGHT - CHART_HEIGHT)
+#define CHART_TOP       (SCREEN_HEIGHT - CHART_HEIGHT)
 #define CHART_LEFT      8
 
 #define ADC_DATA_SIZE   120
@@ -484,24 +490,24 @@ static void draw_screen(bool plot, bool wait) {
 #endif
     uint8_t trig_start = 0;
 
-    oled_clear();
-    oled_vline(CHART_LEFT - 1, CHART_TOP, CHART_HEIGHT, 1);
+    screen_clear();
+    screen_vline(CHART_LEFT - 1, CHART_TOP, CHART_HEIGHT, 1);
     if (vcc == 500) { // 5.0 V
-        for (uint8_t y = 5 + CHART_TOP; y < OLED_HEIGHT; y += 11) {
-            for (uint8_t x = 4; x < OLED_WIDTH; x += 8) {
-                oled_hline(x, y, 3, 1);
+        for (uint8_t y = 5 + CHART_TOP; y < SCREEN_HEIGHT; y += 11) {
+            for (uint8_t x = 4; x < SCREEN_WIDTH; x += 8) {
+                screen_hline(x, y, 3, 1);
             }
         }
     } else { // 3.3 V
-        for (uint8_t y = 10 + CHART_TOP; y < OLED_HEIGHT; y += 17) {
-            for (uint8_t x = 4; x < OLED_WIDTH; x += 8) {
-                oled_hline(x, y, 3, 1);
+        for (uint8_t y = 10 + CHART_TOP; y < SCREEN_HEIGHT; y += 17) {
+            for (uint8_t x = 4; x < SCREEN_WIDTH; x += 8) {
+                screen_hline(x, y, 3, 1);
             }
         }
     }
-    for (uint8_t x = CHART_LEFT + 30; x < OLED_WIDTH; x += 30) {
-        for (uint8_t y = CHART_TOP + 2; y < OLED_HEIGHT; y += 8) {
-            oled_vline(x, y, 3, 1);
+    for (uint8_t x = CHART_LEFT + 30; x < SCREEN_WIDTH; x += 30) {
+        for (uint8_t y = CHART_TOP + 2; y < SCREEN_HEIGHT; y += 8) {
+            screen_vline(x, y, 3, 1);
         }
     }
 
@@ -535,15 +541,15 @@ static void draw_screen(bool plot, bool wait) {
         uint8_t index = i + trig_start;
 
 #ifdef ADC_8BIT
-        adc_data[index] = OLED_HEIGHT - 1 - trim(((adc_data[index] - adc_min) << scale) + trig_value) * CHART_HEIGHT / 255;
+        adc_data[index] = SCREEN_HEIGHT - 1 - trim(((adc_data[index] - adc_min) << scale) + trig_value) * CHART_HEIGHT / 255;
 #else
-        adc_data[index] = OLED_HEIGHT - 1 - trim(((adc_data[index] - adc_min) << scale) + trig_value) * CHART_HEIGHT / 1023;
+        adc_data[index] = SCREEN_HEIGHT - 1 - trim(((adc_data[index] - adc_min) << scale) + trig_value) * CHART_HEIGHT / 1023;
 #endif
         if (plot) {
-            oled_pixel(i + CHART_LEFT, adc_data[index], 1);
+            screen_pixel(i + CHART_LEFT, adc_data[index], 1);
         } else {
             if (i)
-                oled_line(i + CHART_LEFT - 1, adc_data[index - 1], i + CHART_LEFT, adc_data[index], 1);
+                screen_line(i + CHART_LEFT - 1, adc_data[index - 1], i + CHART_LEFT, adc_data[index], 1);
         }
     }
 #ifdef ADC_8BIT
@@ -571,8 +577,12 @@ static void draw_screen(bool plot, bool wait) {
     *s++ = '.';
     s = u2str(s, adc_max % 100, 10);
     *s = '\0';
-    oled_printstr(str, 0, 0, 1);
-    oled_flush(wait);
+    screen_printstr(str, 0, 0, 1);
+#ifdef USE_SH1106
+    sh1106_flush(wait);
+#else
+    ssd1306_flush(wait);
+#endif
 }
 
 int main(void) {
@@ -584,7 +594,11 @@ int main(void) {
 
     delay_ms(50);
 
-    if (! oled_begin()) {
+#ifdef USE_SH1106
+    if (! sh1106_begin()) {
+#else
+    if (! ssd1306_begin()) {
+#endif
         while (1) {}
     }
 

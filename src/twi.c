@@ -14,6 +14,8 @@
 #define I2C_MASTER_TRANSMITTER_MODE_SELECTED    0x00070082 /* BUSY, MSL, ADDR, TXE and TRA flags */
 #define I2C_MASTER_RECEIVER_MODE_SELECTED       0x00030002 /* BUSY, MSL and ADDR flags */
 #define I2C_MASTER_BYTE_TRANSMITTED             0x00070084 /* TRA, BUSY, MSL, TXE and BTF flags */
+#define I2C_FLAG_TXE                            0x00000080
+#define I2C_FLAG_RXNE                           0x00000040
 #endif
 
 #define TWI_WAIT    32768
@@ -171,6 +173,7 @@ twi_err TWI_Start(uint8_t addr, bool receiver) {
         if (! timeout--)
             return TWI_BUSY;
     }
+    I2C_AcknowledgeConfig(I2C1, ENABLE);
     I2C_GenerateSTART(I2C1, ENABLE);
 
     timeout = TWI_WAIT;
@@ -221,36 +224,133 @@ inline void __attribute__((always_inline)) TWI_Stop() {
 #endif
 }
 
-void TWI_Read(uint8_t *buf, uint16_t size) {
+int16_t TWI_Read(bool last) {
+#ifdef USE_SPL
+    volatile uint32_t timeout;
+
+    timeout = TWI_WAIT;
+    while (I2C_GetFlagStatus(I2C1, I2C_FLAG_RXNE) == RESET) {
+        if (! timeout--)
+            return -1;
+    }
+    if (last)
+        I2C_AcknowledgeConfig(I2C1, DISABLE);
+    return I2C_ReceiveData(I2C1);
+#else
+    if (! TWI_Wait(I2C_FLAG_RXNE))
+        return -1;
+    if (last)
+        I2C1->CTLR1 &= ~I2C_CTLR1_ACK;
+    return I2C1->DATAR;
+#endif
+}
+
+uint16_t TWI_Reads(uint8_t *buf, uint16_t size, bool last) {
+    for (uint16_t i = 0; i < size; ++i) {
+#ifdef USE_SPL
+        volatile uint32_t timeout;
+
+        timeout = TWI_WAIT;
+        while (I2C_GetFlagStatus(I2C1, I2C_FLAG_RXNE) == RESET) {
+            if (! timeout--)
+                return i;
+        }
+        if (last && (i == size - 1))
+            I2C_AcknowledgeConfig(I2C1, DISABLE);
+        buf[i] = I2C_ReceiveData(I2C1);
+
+#else
+        if (! TWI_Wait(I2C_FLAG_RXNE))
+            return i;
+        if (last && (i == size - 1))
+            I2C1->CTLR1 &= ~I2C_CTLR1_ACK;
+        buf[i] = I2C1->DATAR;
+#endif
+    }
+    return size;
+}
+
+void TWI_ReadsAsync(uint8_t *buf, uint16_t size, bool autostop) {
 #ifdef USE_SPL
     DMA_SetCurrDataCounter(DMA1_Channel7, size);
 #else
     DMA1_Channel7->CNTR = size;
 #endif
     DMA1_Channel7->MADDR = (uint32_t)buf;
-    _twi_flags = TWI_FLAG_AUTOSTOP;
+    _twi_flags = TWI_FLAG_BUSY | autostop;
 #ifdef USE_SPL
     DMA_Cmd(DMA1_Channel7, ENABLE);
 #else
     DMA1_Channel7->CFGR |= DMA_CFGR1_EN;
 #endif
-    while (_twi_flags & TWI_FLAG_WAIT) {}
 }
 
-void TWI_Write(const uint8_t *buf, uint16_t size, uint8_t flags) {
+bool TWI_Write(uint8_t data) {
+#ifdef USE_SPL
+    volatile uint32_t timeout;
+
+    timeout = TWI_WAIT;
+    while (I2C_GetFlagStatus(I2C1, I2C_FLAG_TXE) == RESET) {
+        if (! timeout--)
+            return false;
+    }
+    I2C_SendData(I2C1, data);
+    timeout = TWI_WAIT;
+    while (! I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
+        if (! timeout--)
+            return false;
+    }
+    return true;
+#else
+    if (! TWI_Wait(I2C_FLAG_TXE))
+        return false;
+    I2C1->DATAR = data;
+    if (! TWI_Wait(I2C_EVENT_MASTER_BYTE_TRANSMITTED))
+        return false;
+    return true;
+#endif
+}
+
+uint16_t TWI_Writes(const uint8_t *buf, uint16_t size) {
+    for (uint16_t i = 0; i < size; ++i) {
+#ifdef USE_SPL
+        volatile uint32_t timeout;
+
+        timeout = TWI_WAIT;
+        while (I2C_GetFlagStatus(I2C1, I2C_FLAG_TXE) == RESET) {
+            if (! timeout--)
+                return i;
+        }
+        I2C_SendData(I2C1, buf[i]);
+        timeout = TWI_WAIT;
+        while (! I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
+            if (! timeout--)
+                return i;
+        }
+#else
+        if (! TWI_Wait(I2C_FLAG_TXE))
+            return i;
+        I2C1->DATAR = buf[i];
+        if (! TWI_Wait(I2C_EVENT_MASTER_BYTE_TRANSMITTED))
+            return i;
+#endif
+    }
+    return size;
+}
+
+void TWI_WritesAsync(const uint8_t *buf, uint16_t size, bool autostop) {
 #ifdef USE_SPL
     DMA_SetCurrDataCounter(DMA1_Channel6, size);
 #else
     DMA1_Channel6->CNTR = size;
 #endif
     DMA1_Channel6->MADDR = (uint32_t)buf;
-    _twi_flags = flags;
+    _twi_flags = TWI_FLAG_BUSY | autostop;
 #ifdef USE_SPL
     DMA_Cmd(DMA1_Channel6, ENABLE);
 #else
     DMA1_Channel6->CFGR |= DMA_CFGR1_EN;
 #endif
-    while (_twi_flags & TWI_FLAG_WAIT) {}
 }
 
 void __attribute__((interrupt("WCH-Interrupt-fast"))) DMA1_Channel6_IRQHandler() {
@@ -305,4 +405,8 @@ void __attribute__((interrupt("WCH-Interrupt-fast"))) DMA1_Channel7_IRQHandler()
         _twi_flags = 0;
     }
 #endif
+}
+
+inline __attribute__((always_inline)) bool TWI_Asynced() {
+    return (_twi_flags & TWI_FLAG_BUSY) != 0;
 }
