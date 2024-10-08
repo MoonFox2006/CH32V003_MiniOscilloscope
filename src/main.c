@@ -1,4 +1,5 @@
-#define ADC_8BIT
+//#define ADC_8BIT
+#define USE_VREF
 #define USE_SINUS
 
 //#define USE_SH1106
@@ -47,6 +48,11 @@ static uint16_t adc_data[ADC_DATA_SIZE + ADC_TRIG_SIZE];
 #endif
 static char timestr[8];
 static uint16_t vcc; // 500 or 330
+#ifdef ADC_8BIT
+static uint8_t vref; // ~1.2 V internal voltage reference
+#else
+static uint16_t vref; // ~1.2 V internal voltage reference
+#endif
 static volatile uint8_t _adc_flags;
 //static volatile uint8_t adc_len = 0;
 static uint8_t period = DEF_PERIOD;
@@ -185,13 +191,44 @@ static void Init_ADC(uint16_t us) {
     ADC_InitStructure.ADC_Mode = ADC_Mode_Independent;
     ADC_InitStructure.ADC_ScanConvMode = DISABLE;
     ADC_InitStructure.ADC_ContinuousConvMode = DISABLE;
+    ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+    ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
+    ADC_InitStructure.ADC_NbrOfChannel = 1;
+    ADC_Init(ADC1, &ADC_InitStructure);
+
+    ADC_Calibration_Vol(ADC1, ADC_CALVOL_50PERCENT);
+    ADC_Cmd(ADC1, ENABLE);
+
+    ADC_ResetCalibration(ADC1);
+    while(ADC_GetResetCalibrationStatus(ADC1)) {}
+    ADC_StartCalibration(ADC1);
+    while(ADC_GetCalibrationStatus(ADC1)) {}
+
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_Vrefint, 1, ADC_SampleTime_241Cycles);
+
+    {
+        uint32_t sum = 0;
+
+        for (uint8_t i = 0; i <= 10; ++i) {
+            ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+            while (! ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {}
+            if (i) { // Skip first value
+                sum += ADC_GetConversionValue(ADC1);
+            }
+        }
+#ifdef ADC_8BIT
+        vref = (sum / 10) >> 2;
+#else
+        vref = sum / 10;
+#endif
+    }
+
+    ADC_Cmd(ADC1, DISABLE);
+
     ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_T2_CC1;
 #ifdef ADC_8BIT
     ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Left;
-#else
-    ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
 #endif
-    ADC_InitStructure.ADC_NbrOfChannel = 1;
     ADC_Init(ADC1, &ADC_InitStructure);
 
     ADC_RegularChannelConfig(ADC1, ADC_Channel_2, 1, us > 10 ? ADC_SampleTime_241Cycles : us > 3 ? ADC_SampleTime_73Cycles : us > 2 ? ADC_SampleTime_57Cycles : us > 1 ? ADC_SampleTime_30Cycles : ADC_SampleTime_9Cycles);
@@ -199,13 +236,6 @@ static void Init_ADC(uint16_t us) {
     ADC_ExternalTrigConvCmd(ADC1, ENABLE);
 
     ADC_Cmd(ADC1, ENABLE);
-
-    ADC_Calibration_Vol(ADC1, ADC_CALVOL_50PERCENT);
-    ADC_ResetCalibration(ADC1);
-    while(ADC_GetResetCalibrationStatus(ADC1)) {}
-    ADC_StartCalibration(ADC1);
-    while(ADC_GetCalibrationStatus(ADC1)) {}
-
     ADC_DMACmd(ADC1, ENABLE);
 
     DMA_DeInit(DMA1_Channel1);
@@ -276,26 +306,51 @@ static void Init_ADC(uint16_t us) {
     RCC->APB2PRSTR &= ~RCC_ADC1RST;
 
     UPDATE_REG32(&ADC1->CTLR1, 0xFFF0FEFF, 0 | (0 << 8)); // CTLR1_CLEAR_Mask
-#ifdef ADC_8BIT
-    UPDATE_REG32(&ADC1->CTLR2, 0xFFF1F7FD, ADC_ALIGN | ADC_EXTSEL_2 | (0 << 1) | ADC_EXTTRIG); // CTLR2_CLEAR_Mask
-#else
-    UPDATE_REG32(&ADC1->CTLR2, 0xFFF1F7FD, ADC_EXTSEL_2 | (0 << 1) | ADC_EXTTRIG); // CTLR2_CLEAR_Mask
-#endif
+    UPDATE_REG32(&ADC1->CTLR2, 0xFFF1F7FD, (ADC_EXTSEL_0 | ADC_EXTSEL_1 | ADC_EXTSEL_2) | (0 << 1) | ADC_EXTTRIG); // CTLR2_CLEAR_Mask
     UPDATE_REG32(&ADC1->RSQR1, 0xFF0FFFFF, (1 - 1) << 20); // RSQR1_CLEAR_Mask
-    UPDATE_REG32(&ADC1->SAMPTR2, ~(0x07 << (3 * 2)),
-        (uint32_t)(us > 10 ? 0x07 : us > 3 ? 0x06 : us > 2 ? 0x05 : us > 1 ? 0x03 : 0x01) << (3 * 2));
-    UPDATE_REG32(&ADC1->RSQR3, ~(0x1F << (5 * 0)), (uint32_t)2 << (5 * 0));
-    ADC1->DLYR &= ~(uint32_t)0x03FF;
-
-    ADC1->CTLR2 |= ADC_ADON;
+    UPDATE_REG32(&ADC1->SAMPTR2, ~(0x07 << (3 * 2)), 0x07 << (3 * 2));
 
     UPDATE_REG32(&ADC1->CTLR1, ~(uint32_t)(3 << 25), ADC_CALVOLSELECT_0);
+    ADC1->CTLR2 |= ADC_ADON;
+
     ADC1->CTLR2 |= ADC_RSTCAL;
     while (ADC1->CTLR2 & ADC_RSTCAL) {}
     ADC1->CTLR2 |= ADC_CAL;
     while (ADC1->CTLR2 & ADC_CAL) {}
 
-    ADC1->CTLR2 |= ADC_DMA;
+    UPDATE_REG32(&ADC1->RSQR3, ~(0x1F << (5 * 0)), (uint32_t)8 << (5 * 0)); // ADC_Channel_Vrefint (8)
+
+    {
+        uint32_t sum = 0;
+
+        for (uint8_t i = 0; i <= 10; ++i) {
+            ADC1->CTLR2 |= ADC_SWSTART;
+            while (! (ADC1->STATR & ADC_EOC)) {}
+            if (i) { // Skip first value
+                sum += ADC1->RDATAR;
+            }
+        }
+#ifdef ADC_8BIT
+        vref = (sum / 10) >> 2;
+#else
+        vref = sum / 10;
+#endif
+    }
+
+    ADC1->CTLR2 &= ~ADC_ADON;
+
+#ifdef ADC_8BIT
+    UPDATE_REG32(&ADC1->CTLR2, 0xFFF1F7FD, ADC_ALIGN | ADC_EXTSEL_2 | (0 << 1) | ADC_EXTTRIG); // CTLR2_CLEAR_Mask
+#else
+    UPDATE_REG32(&ADC1->CTLR2, 0xFFF1F7FD, ADC_EXTSEL_2 | (0 << 1) | ADC_EXTTRIG); // CTLR2_CLEAR_Mask
+#endif
+//    UPDATE_REG32(&ADC1->RSQR1, 0xFF0FFFFF, (1 - 1) << 20); // RSQR1_CLEAR_Mask
+    UPDATE_REG32(&ADC1->SAMPTR2, ~(0x07 << (3 * 2)),
+        (uint32_t)(us > 10 ? 0x07 : us > 3 ? 0x06 : us > 2 ? 0x05 : us > 1 ? 0x03 : 0x01) << (3 * 2));
+    UPDATE_REG32(&ADC1->RSQR3, ~(0x1F << (5 * 0)), (uint32_t)2 << (5 * 0));
+    ADC1->DLYR &= ~(uint32_t)0x03FF;
+
+    ADC1->CTLR2 |= (ADC_ADON | ADC_DMA);
 
 #ifdef ADC_8BIT
     DMA1_Channel1->CFGR = DMA_CFGR1_MINC | DMA_CFGR1_PL_0 | DMA_CFGR1_PL_1;
@@ -552,12 +607,17 @@ static void draw_screen(bool plot, bool wait) {
                 screen_line(i + CHART_LEFT - 1, adc_data[index - 1], i + CHART_LEFT, adc_data[index], 1);
         }
     }
+#ifdef USE_VREF
+    adc_min = adc_min * 120 / vref;
+    adc_max = adc_max * 120 / vref;
+#else
 #ifdef ADC_8BIT
     adc_min = adc_min * vcc / 255;
     adc_max = adc_max * vcc / 255;
 #else
     adc_min = adc_min * vcc / 1023;
     adc_max = adc_max * vcc / 1023;
+#endif
 #endif
     str[0] = (trig == TRIG_RISING) ? '/' : (trig == TRIG_FALLING) ? '\\' : '~';
     str[1] = ' ';
