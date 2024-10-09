@@ -1,5 +1,4 @@
 //#define ADC_8BIT
-#define USE_VREF
 #define USE_SINUS
 
 //#define USE_SH1106
@@ -32,6 +31,8 @@
 #define ADC_TRIG_SIZE   (ADC_DATA_SIZE / 2)
 
 #define ADC_FLAG_BUSY   1
+
+#define VREF            120 // 1.2 V
 
 enum { TRIG_FREE, TRIG_RISING, TRIG_FALLING };
 
@@ -607,9 +608,9 @@ static void draw_screen(bool plot, bool wait) {
                 screen_line(i + CHART_LEFT - 1, adc_data[index - 1], i + CHART_LEFT, adc_data[index], 1);
         }
     }
-#ifdef USE_VREF
-    adc_min = adc_min * 120 / vref;
-    adc_max = adc_max * 120 / vref;
+#ifdef VREF
+    adc_min = adc_min * VREF / vref;
+    adc_max = adc_max * VREF / vref;
 #else
 #ifdef ADC_8BIT
     adc_min = adc_min * vcc / 255;
